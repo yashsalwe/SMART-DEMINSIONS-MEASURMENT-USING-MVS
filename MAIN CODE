@@ -1,0 +1,109 @@
+import cv2
+import torch
+import numpy as np
+from ultralogger import YOLO
+import os
+
+# --------------------------------------------------
+# Load Camera Calibration Data
+# --------------------------------------------------
+calibration_file = 'calibration_data.npz'
+if not os.path.exists(calibration_file):
+    print(f"Error: Calibration file not found at '{calibration_file}'")
+    print("Please run the 'calibrate_camera.py' script first.")
+    exit()
+
+data = np.load(calibration_file)
+mtx = data['mtx']
+dist = data['dist']
+print("Camera calibration data loaded successfully.")
+
+# --------------------------------------------------
+# Load trained pose model
+# --------------------------------------------------
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+print("Running on:", device)
+model = YOLO(r"C:\invv\runs\pose\train13\weights\best.pt")
+
+# --------------------------------------------------
+# Open webcam
+# --------------------------------------------------
+cap = cv2.VideoCapture(1)
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+
+# --------------------------------------------------
+# Calibration and Settings
+# --------------------------------------------------
+px_to_mm = 0.9166  # You may need to re-calculate this on an undistorted image
+CONF_THRESHOLD = 0.5
+
+# --------------------------------------------------
+# Distance calculation
+# --------------------------------------------------
+def euclidean_distance(p1, p2):
+    return np.linalg.norm(np.array(p1) - np.array(p2))
+
+while True:
+    ret, frame = cap.read()
+    if not ret:
+        break
+    
+    # --- 1. UNDISTORT THE FRAME USING CALIBRATION DATA ---
+    h, w = frame.shape[:2]
+    newcameramtx, roi = cv2.getOptimalNewCameraMatrix(mtx, dist, (w, h), 1, (w, h))
+    undistorted_frame = cv2.undistort(frame, mtx, dist, None, newcameramtx)
+
+    # Crop the image to the valid area after undistortion
+    x, y, w, h = roi
+    undistorted_frame = undistorted_frame[y:y+h, x:x+w]
+    # All further processing will be on 'undistorted_frame'
+
+    # --- 2. RUN INFERENCE ON THE CORRECTED FRAME ---
+    results = model(undistorted_frame, device=device, verbose=False)
+
+    for r in results:
+        if r.keypoints is not None and len(r.keypoints.xy) > 0:
+            kps_all = r.keypoints.xy.cpu().numpy()
+            confs_all = r.keypoints.conf.cpu().numpy()
+
+            kps = kps_all[0]
+            confs = confs_all[0]
+
+            valid_points = []
+            for i, ((px, py), conf) in enumerate(zip(kps, confs)):
+                if conf > CONF_THRESHOLD:
+                    cv2.circle(undistorted_frame, (int(px), int(py)), 6, (0, 255, 0), -1)
+                    cv2.putText(undistorted_frame, f"P{i+1}", (int(px) + 5, int(py) - 5),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+                    valid_points.append((int(px), int(py)))
+                else:
+                    valid_points.append(None)
+
+            total_length_mm = 0
+            for i in range(len(valid_points) - 1):
+                pt1 = valid_points[i]
+                pt2 = valid_points[i+1]
+
+                if pt1 is not None and pt2 is not None:
+                    cv2.line(undistorted_frame, pt1, pt2, (255, 0, 0), 2)
+
+                    distance_px = euclidean_distance(pt1, pt2)
+                    distance_mm = distance_px * px_to_mm
+                    total_length_mm += distance_mm
+
+                    mid_point = ((pt1[0] + pt2[0]) // 2, (pt1[1] + pt2[1]) // 2)
+                    cv2.putText(undistorted_frame, f"{distance_mm:.1f} mm", mid_point,
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+
+            cv2.putText(undistorted_frame, f"Rod Length: {total_length_mm:.1f} mm", (50, 50),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+
+    # Display the final, corrected frame
+    cv2.imshow("Rod Keypoints with Measurements (Undistorted)", undistorted_frame)
+
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+
+cap.release()
+cv2.destroyAllWindows()
