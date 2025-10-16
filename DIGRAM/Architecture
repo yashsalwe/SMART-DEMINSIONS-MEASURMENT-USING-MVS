@@ -1,0 +1,32 @@
++--------------------+
+|   Camera / Image   |
+|   Capture Module   |
++---------+----------+
+          |
+          v
++--------------------+
+| Preprocessing (CV) |
+|  - Resize / Filter |
+|  - Edge detection  |
++---------+----------+
+          |
+          v
++-----------------------------+
+| Roboflow ML Model Inference |
+|  - Detect rod boundaries    |
+|  - Get pixel coordinates    |
++---------+-------------------+
+          |
+          v
++-----------------------------+
+| Length Measurement Logic    |
+|  - Pixel distance → cm      |
+|  - Calibration factor       |
++---------+-------------------+
+          |
+          v
++-----------------------------+
+| Visualization & Output      |
+|  - Display results          |
+|  - Save to file / Streamlit |
++-----------------------------+
