@@ -1,0 +1,11 @@
+project/
+ ├─ geometry/
+ │   ├─ template/               # a few "golden" backlit images
+ │   └─ samples/                # test images (backlit)
+ ├─ anomaly/                    # for Anomalib (unsupervised AD)
+ │   ├─ dataset/
+ │   │   ├─ good/               # ONLY good images (train)
+ │   │   └─ defect/             # hold-out validation/test (mix)
+ └─ yolo/                       # optional supervised detector/segmenter
+     ├─ images/train, val, test
+     └─ labels/train, val, test   # YOLO txt (and masks if -seg)
