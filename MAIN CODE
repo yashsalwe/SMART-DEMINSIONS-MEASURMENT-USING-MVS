@@ -1,109 +1,134 @@
 import cv2
 import torch
 import numpy as np
-from ultralogger import YOLO
+from ultralytics import YOLO
 import os
 
 # --------------------------------------------------
-# Load Camera Calibration Data
+# Configuration and Constants
 # --------------------------------------------------
-calibration_file = 'calibration_data.npz'
-if not os.path.exists(calibration_file):
-    print(f"Error: Calibration file not found at '{calibration_file}'")
-    print("Please run the 'calibrate_camera.py' script first.")
-    exit()
+# --- Model and Camera Settings ---
+MODEL_PATH = "best.pt"         # Path to your trained YOLOv8 pose model
+VIDEO_SOURCE = 0              # Webcam index (0 for built-in, 1 for external, etc.)
+FRAME_WIDTH = 1280
+FRAME_HEIGHT = 720
 
-data = np.load(calibration_file)
-mtx = data['mtx']
-dist = data['dist']
-print("Camera calibration data loaded successfully.")
+# --- Detection and Measurement Settings ---
+CONF_THRESHOLD = 0.5           # Confidence threshold for detecting keypoints
+PX_TO_MM_RATIO = 0.9166        # IMPORTANT: This ratio must be calibrated for your specific camera setup and distance to the object.
 
-# --------------------------------------------------
-# Load trained pose model
-# --------------------------------------------------
-device = 'cuda' if torch.cuda.is_available() else 'cpu'
-print("Running on:", device)
-model = YOLO(r"C:\invv\runs\pose\train13\weights\best.pt")
-
-# --------------------------------------------------
-# Open webcam
-# --------------------------------------------------
-cap = cv2.VideoCapture(1)
-cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+# --- Drawing and Display Settings ---
+KP_COLOR = (0, 255, 0)         # Color for valid keypoints (Green)
+LINE_COLOR = (255, 0, 0)       # Color for lines connecting keypoints (Blue)
+TEXT_COLOR = (0, 0, 255)       # Color for keypoint labels (Red)
+MEASURE_TEXT_COLOR = (0, 255, 255) # Color for distance measurements (Yellow)
+INFO_TEXT_COLOR = (0, 255, 0)  # Color for the total length text (Green)
+WINDOW_NAME = "Rod Length Measurement"
 
 # --------------------------------------------------
-# Calibration and Settings
-# --------------------------------------------------
-px_to_mm = 0.9166  # You may need to re-calculate this on an undistorted image
-CONF_THRESHOLD = 0.5
-
-# --------------------------------------------------
-# Distance calculation
+# Helper Functions
 # --------------------------------------------------
 def euclidean_distance(p1, p2):
+    """Calculates the Euclidean distance between two points."""
     return np.linalg.norm(np.array(p1) - np.array(p2))
 
-while True:
-    ret, frame = cap.read()
-    if not ret:
-        break
-    
-    # --- 1. UNDISTORT THE FRAME USING CALIBRATION DATA ---
-    h, w = frame.shape[:2]
-    newcameramtx, roi = cv2.getOptimalNewCameraMatrix(mtx, dist, (w, h), 1, (w, h))
-    undistorted_frame = cv2.undistort(frame, mtx, dist, None, newcameramtx)
+def draw_results(frame, keypoints, confidences, conf_threshold, px_to_mm):
+    """
+    Processes and draws keypoints, lines, and measurements on the frame.
+    Returns the total calculated length of the rod.
+    """
+    valid_points = []
+    # Create a list of valid keypoints based on confidence score
+    for kp, conf in zip(keypoints, confidences):
+        if conf > conf_threshold:
+            px, py = int(kp[0]), int(kp[1])
+            valid_points.append((px, py))
+            # Draw a circle on the keypoint
+            cv2.circle(frame, (px, py), 6, KP_COLOR, -1)
+        else:
+            # Use None as a placeholder for low-confidence keypoints
+            valid_points.append(None)
 
-    # Crop the image to the valid area after undistortion
-    x, y, w, h = roi
-    undistorted_frame = undistorted_frame[y:y+h, x:x+w]
-    # All further processing will be on 'undistorted_frame'
+    total_length_mm = 0
+    # Draw lines and calculate distances between consecutive valid points
+    for i in range(len(valid_points) - 1):
+        pt1 = valid_points[i]
+        pt2 = valid_points[i+1]
 
-    # --- 2. RUN INFERENCE ON THE CORRECTED FRAME ---
-    results = model(undistorted_frame, device=device, verbose=False)
+        # Only draw a line if both points are valid
+        if pt1 is not None and pt2 is not None:
+            # Draw the connecting line
+            cv2.line(frame, pt1, pt2, LINE_COLOR, 2)
 
-    for r in results:
-        if r.keypoints is not None and len(r.keypoints.xy) > 0:
-            kps_all = r.keypoints.xy.cpu().numpy()
-            confs_all = r.keypoints.conf.cpu().numpy()
+            # Calculate and display the distance for this segment
+            distance_px = euclidean_distance(pt1, pt2)
+            distance_mm = distance_px * px_to_mm
+            total_length_mm += distance_mm
 
-            kps = kps_all[0]
-            confs = confs_all[0]
+            # Put text with the segment length
+            mid_point = ((pt1[0] + pt2[0]) // 2, (pt1[1] + pt2[1]) // 2 - 10)
+            cv2.putText(frame, f"{distance_mm:.1f} mm", mid_point,
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, MEASURE_TEXT_COLOR, 2)
 
-            valid_points = []
-            for i, ((px, py), conf) in enumerate(zip(kps, confs)):
-                if conf > CONF_THRESHOLD:
-                    cv2.circle(undistorted_frame, (int(px), int(py)), 6, (0, 255, 0), -1)
-                    cv2.putText(undistorted_frame, f"P{i+1}", (int(px) + 5, int(py) - 5),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
-                    valid_points.append((int(px), int(py)))
-                else:
-                    valid_points.append(None)
+    return total_length_mm
 
-            total_length_mm = 0
-            for i in range(len(valid_points) - 1):
-                pt1 = valid_points[i]
-                pt2 = valid_points[i+1]
+# --------------------------------------------------
+# Main Execution Block
+# --------------------------------------------------
+def main():
+    # --- 1. Load Model and Set Device ---
+    if not os.path.exists(MODEL_PATH):
+        print(f"Error: Model file not found at '{MODEL_PATH}'")
+        return
 
-                if pt1 is not None and pt2 is not None:
-                    cv2.line(undistorted_frame, pt1, pt2, (255, 0, 0), 2)
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    print(f"Running on device: {device}")
+    model = YOLO(MODEL_PATH)
 
-                    distance_px = euclidean_distance(pt1, pt2)
-                    distance_mm = distance_px * px_to_mm
-                    total_length_mm += distance_mm
+    # --- 2. Initialize Webcam ---
+    cap = cv2.VideoCapture(VIDEO_SOURCE)
+    if not cap.isOpened():
+        print(f"Error: Could not open video source {VIDEO_SOURCE}.")
+        return
 
-                    mid_point = ((pt1[0] + pt2[0]) // 2, (pt1[1] + pt2[1]) // 2)
-                    cv2.putText(undistorted_frame, f"{distance_mm:.1f} mm", mid_point,
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
+    print("Webcam opened successfully.")
 
-            cv2.putText(undistorted_frame, f"Rod Length: {total_length_mm:.1f} mm", (50, 50),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+    # --- 3. Main Loop for Real-time Inference ---
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            print("Failed to grab frame. Exiting...")
+            break
 
-    # Display the final, corrected frame
-    cv2.imshow("Rod Keypoints with Measurements (Undistorted)", undistorted_frame)
+        # --- Run Inference ---
+        results = model(frame, device=device, verbose=False)
 
-    if cv2.waitKey(1) & 0xFF == ord('q'):
-        break
+        # --- Process Results ---
+        # Assuming the first detected object is the one of interest
+        if results and results[0].keypoints and results[0].keypoints.shape[1] > 0:
+            keypoints = results[0].keypoints.xy.cpu().numpy()[0]
+            confidences = results[0].keypoints.conf.cpu().numpy()[0]
 
-cap.release()
-cv2.destroyAllWindows()
+            # Draw keypoints and calculate length
+            total_length_mm = draw_results(frame, keypoints, confidences, CONF_THRESHOLD, PX_TO_MM_RATIO)
+
+            # Display the total calculated length on the frame
+            cv2.putText(frame, f"Total Rod Length: {total_length_mm:.1f} mm", (50, 50),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1, INFO_TEXT_COLOR, 2, cv2.LINE_AA)
+
+        # --- Display the Frame ---
+        cv2.imshow(WINDOW_NAME, frame)
+
+        # --- Exit Condition ---
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            print("Exiting program.")
+            break
+
+    # --- 4. Cleanup ---
+    cap.release()
+    cv2.destroyAllWindows()
+
+if __name__ == "__main__":
+    main()
