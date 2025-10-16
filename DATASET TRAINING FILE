@@ -1,0 +1,58 @@
+# ==========================================
+# Rod Detection Training Script (50 Epochs)
+# Using Roboflow + YOLOv8
+# ==========================================
+
+from roboflow import Roboflow
+from ultralytics import YOLO
+import os
+
+# -----------------------------
+# 1. SETUP: Initialize Roboflow
+# -----------------------------
+# Replace with your actual API key
+ROBOFLOW_API_KEY = "YOUR_ROBOFLOW_API_KEY"
+PROJECT_NAME = "rod-length-detector"     # your project name
+PROJECT_VERSION = "1"                    # dataset version number
+
+# Initialize Roboflow connection
+rf = Roboflow(api_key=ROBOFLOW_API_KEY)
+project = rf.workspace().project(PROJECT_NAME)
+dataset = project.version(PROJECT_VERSION).download("yolov8")
+
+# -----------------------------
+# 2. LOAD YOLOv8 MODEL
+# -----------------------------
+# You can choose from:
+# yolov8n.pt  -> nano (fastest)
+# yolov8s.pt  -> small (balanced)
+# yolov8m.pt  -> medium
+# yolov8l.pt  -> large (most accurate, slower)
+# yolov8x.pt  -> extra-large (very accurate, slowest)
+
+model = YOLO("yolov8s.pt")  # start from a pretrained small model
+
+# -----------------------------
+# 3. TRAIN THE MODEL
+# -----------------------------
+# dataset.location points to the downloaded dataset folder
+results = model.train(
+    data=os.path.join(dataset.location, "data.yaml"),  # dataset config
+    epochs=50,                                         # train for 50 epochs
+    imgsz=640,                                         # image size
+    batch=16,                                          # batch size (adjust per GPU)
+    device=0,                                          # 0 for GPU, 'cpu' for CPU
+    name="rod-length-yolov8",                          # save folder name
+    project="runs/train",                              # save directory
+    exist_ok=True
+)
+
+# -----------------------------
+# 4. EXPORT THE MODEL (optional)
+# -----------------------------
+# After training, you can export your model to various formats:
+# - onnx, tflite, coreml, openvino, etc.
+model.export(format="onnx")  # example: export to ONNX
+
+print("\n✅ Training completed successfully!")
+print(f"Trained model saved at: {results.save_dir}")
